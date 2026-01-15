@@ -20,6 +20,7 @@ import {
   Shield,
   Sun,
   Moon,
+  Plus,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useTheme } from '../context/ThemeContext'
@@ -62,7 +63,7 @@ export const Sidebar = ({ mobileMenuOpen, setMobileMenuOpen }) => {
       label: 'Инвентаризация',
       icon: Package,
       path: '/inventory',
-      visible: isAdmin,
+      visible: isAdmin || isIT,
     },
     {
       id: 'todos',
@@ -83,14 +84,14 @@ export const Sidebar = ({ mobileMenuOpen, setMobileMenuOpen }) => {
       label: 'Правила',
       icon: FileText,
       path: '/rules',
-      visible: true,
+      visible: !isIT && !isAdmin, // Скрыть для IT отдела и админа
     },
     {
       id: 'help',
       label: 'Подсказки',
       icon: HelpCircle,
       path: '/help',
-      visible: true,
+      visible: !isIT && !isAdmin, // Скрыть для IT отдела и админа
     },
   ].filter((item) => item.visible)
 
@@ -132,7 +133,7 @@ export const Sidebar = ({ mobileMenuOpen, setMobileMenuOpen }) => {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-4 lg:p-6 overflow-y-auto min-h-0">
+      <nav className="flex-1 p-4 lg:p-6 overflow-y-auto min-h-0 scrollbar-hide">
         <div className="space-y-1">
           {menuItems.map((item) => {
             const Icon = item.icon
@@ -199,7 +200,7 @@ export const Sidebar = ({ mobileMenuOpen, setMobileMenuOpen }) => {
           <Button
             variant="ghost"
             size="icon"
-            className="lg:hidden fixed top-4 left-4 z-40"
+            className="lg:hidden fixed top-4 left-4 z-50 bg-background/90 backdrop-blur-sm border shadow-lg hover:bg-background h-10 w-10"
           >
             <Menu className="h-5 w-5" />
             <span className="sr-only">Меню</span>

@@ -216,17 +216,17 @@ export const Help = () => {
   )
 
   return (
-    <div className="space-y-6 md:space-y-8">
+    <div className="space-y-6 md:space-y-8 px-4 md:px-6 lg:px-8 max-w-7xl mx-auto pt-16 lg:pt-4 sm:pt-6">
       {/* Header */}
-      <div className="relative overflow-hidden rounded-xl bg-gradient-to-r from-green-500 via-teal-500 to-cyan-500 p-6 md:p-8 text-white shadow-xl">
+      <div className="relative overflow-hidden rounded-xl bg-gradient-to-r from-green-500 via-teal-500 to-cyan-500 p-4 sm:p-6 md:p-8 text-white shadow-xl pl-12 lg:pl-4 sm:pl-6">
         <div className="relative z-10">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="p-3 bg-white/20 rounded-lg backdrop-blur-sm">
-              <HelpCircle className="h-8 w-8" />
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 mb-2">
+            <div className="p-2 sm:p-3 bg-white/20 rounded-lg backdrop-blur-sm flex-shrink-0">
+              <HelpCircle className="h-6 w-6 sm:h-8 sm:w-8" />
             </div>
-            <h1 className="text-3xl sm:text-4xl font-bold">Подсказки и инструкции</h1>
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold">Подсказки и инструкции</h1>
           </div>
-          <p className="text-green-50 text-sm sm:text-base mt-2">
+          <p className="text-green-50 text-xs sm:text-sm md:text-base mt-2">
             Пошаговые инструкции по решению распространенных проблем
           </p>
         </div>

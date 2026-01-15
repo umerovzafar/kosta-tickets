@@ -7,12 +7,20 @@ import { Label } from '../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { ToastContainer } from '../components/ui/toast'
-import { Ticket, Database } from 'lucide-react'
-import { initTestData } from '../utils/initTestData'
+import { Ticket, AlertCircle } from 'lucide-react'
+import {
+  validateUsername,
+  validateEmail,
+  validatePassword,
+  validateConfirmPassword,
+  validateRegistration,
+} from '../utils/validation'
 
 export const Login = () => {
   const [loginData, setLoginData] = useState({ username: '', password: '' })
   const [registerData, setRegisterData] = useState({ username: '', password: '', confirmPassword: '', email: '' })
+  const [registerErrors, setRegisterErrors] = useState({})
+  const [touchedFields, setTouchedFields] = useState({})
   const [toasts, setToasts] = useState([])
   const { login, register } = useAuth()
   const navigate = useNavigate()
@@ -25,9 +33,9 @@ export const Login = () => {
     }, 3000)
   }
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault()
-    const result = login(loginData.username, loginData.password)
+    const result = await login(loginData.username, loginData.password)
     if (result.success) {
       navigate('/')
     } else {
@@ -35,30 +43,92 @@ export const Login = () => {
     }
   }
 
-  const handleRegister = (e) => {
+  const handleFieldBlur = (fieldName) => {
+    setTouchedFields((prev) => ({ ...prev, [fieldName]: true }))
+    validateField(fieldName, registerData[fieldName])
+  }
+
+  const validateField = (fieldName, value) => {
+    const errors = { ...registerErrors }
+
+    switch (fieldName) {
+      case 'username':
+        const usernameValidation = validateUsername(value)
+        if (!usernameValidation.isValid) {
+          errors.username = usernameValidation.error
+        } else {
+          delete errors.username
+        }
+        break
+      case 'email':
+        const emailValidation = validateEmail(value)
+        if (!emailValidation.isValid) {
+          errors.email = emailValidation.error
+        } else {
+          delete errors.email
+        }
+        break
+      case 'password':
+        const passwordValidation = validatePassword(value)
+        if (!passwordValidation.isValid) {
+          errors.password = passwordValidation.error
+        } else {
+          delete errors.password
+          // Перепроверяем подтверждение пароля, если оно уже введено
+          if (registerData.confirmPassword) {
+            const confirmValidation = validateConfirmPassword(value, registerData.confirmPassword)
+            if (!confirmValidation.isValid) {
+              errors.confirmPassword = confirmValidation.error
+            } else {
+              delete errors.confirmPassword
+            }
+          }
+        }
+        break
+      case 'confirmPassword':
+        const confirmValidation = validateConfirmPassword(registerData.password, value)
+        if (!confirmValidation.isValid) {
+          errors.confirmPassword = confirmValidation.error
+        } else {
+          delete errors.confirmPassword
+        }
+        break
+      default:
+        break
+    }
+
+    setRegisterErrors(errors)
+  }
+
+  const handleRegister = async (e) => {
     e.preventDefault()
-    if (registerData.password !== registerData.confirmPassword) {
-      showToast('Ошибка регистрации', 'Пароли не совпадают', 'destructive')
+
+    // Помечаем все поля как touched
+    setTouchedFields({
+      username: true,
+      email: true,
+      password: true,
+      confirmPassword: true,
+    })
+
+    // Валидация всех полей
+    const validation = validateRegistration(registerData)
+    setRegisterErrors(validation.errors)
+
+    if (!validation.isValid) {
+      // Показываем первую ошибку в тосте
+      const firstError = Object.values(validation.errors)[0]
+      showToast('Ошибка регистрации', firstError, 'destructive')
       return
     }
-    if (registerData.password.length < 4) {
-      showToast('Ошибка регистрации', 'Пароль должен быть не менее 4 символов', 'destructive')
-      return
-    }
-    const result = register(registerData.username, registerData.password, 'user', registerData.email)
+
+    // Регистрация пользователя
+    const result = await register(registerData.username, registerData.password, 'user', registerData.email)
     if (result.success) {
+      showToast('Успешно', 'Регистрация прошла успешно!', 'default')
       navigate('/')
     } else {
       showToast('Ошибка регистрации', result.error, 'destructive')
-    }
-  }
-
-  const handleInitTestData = () => {
-    try {
-      initTestData()
-      showToast('Успешно', 'Тестовые данные созданы! Проверьте консоль для данных входа.', 'default')
-    } catch (error) {
-      showToast('Ошибка', 'Не удалось создать тестовые данные', 'destructive')
     }
   }
 
@@ -79,7 +149,18 @@ export const Login = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs defaultValue="login" className="w-full">
+            <Tabs
+              defaultValue="login"
+              className="w-full"
+              onValueChange={(value) => {
+                // Очищаем ошибки и touched поля при переключении вкладок
+                if (value === 'login') {
+                  setRegisterErrors({})
+                  setTouchedFields({})
+                  setRegisterData({ username: '', password: '', confirmPassword: '', email: '' })
+                }
+              }}
+            >
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="login">Вход</TabsTrigger>
                 <TabsTrigger value="register">Регистрация</TabsTrigger>
@@ -121,11 +202,22 @@ export const Login = () => {
                     <Input
                       id="register-username"
                       value={registerData.username}
-                      onChange={(e) =>
+                      onChange={(e) => {
                         setRegisterData({ ...registerData, username: e.target.value })
-                      }
+                        if (touchedFields.username) {
+                          validateField('username', e.target.value)
+                        }
+                      }}
+                      onBlur={() => handleFieldBlur('username')}
+                      className={registerErrors.username ? 'border-red-500' : ''}
                       required
                     />
+                    {touchedFields.username && registerErrors.username && (
+                      <div className="flex items-center gap-1 text-sm text-red-500">
+                        <AlertCircle className="h-4 w-4" />
+                        <span>{registerErrors.username}</span>
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="register-email">Email</Label>
@@ -133,12 +225,28 @@ export const Login = () => {
                       id="register-email"
                       type="email"
                       value={registerData.email}
-                      onChange={(e) =>
+                      onChange={(e) => {
                         setRegisterData({ ...registerData, email: e.target.value })
-                      }
-                      placeholder="example@company.com"
+                        if (touchedFields.email) {
+                          validateField('email', e.target.value)
+                        }
+                      }}
+                      onBlur={() => handleFieldBlur('email')}
+                      placeholder="example@kostalegal.com"
+                      className={registerErrors.email ? 'border-red-500' : ''}
                       required
                     />
+                    {touchedFields.email && registerErrors.email && (
+                      <div className="flex items-center gap-1 text-sm text-red-500">
+                        <AlertCircle className="h-4 w-4" />
+                        <span>{registerErrors.email}</span>
+                      </div>
+                    )}
+                    {!registerErrors.email && (
+                      <p className="text-xs text-muted-foreground">
+                        Email должен быть с доменом @kostalegal.com
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="register-password">Пароль</Label>
@@ -146,12 +254,27 @@ export const Login = () => {
                       id="register-password"
                       type="password"
                       value={registerData.password}
-                      onChange={(e) =>
+                      onChange={(e) => {
                         setRegisterData({ ...registerData, password: e.target.value })
-                      }
+                        if (touchedFields.password) {
+                          validateField('password', e.target.value)
+                        }
+                      }}
+                      onBlur={() => handleFieldBlur('password')}
+                      className={registerErrors.password ? 'border-red-500' : ''}
                       required
-                      minLength={4}
                     />
+                    {touchedFields.password && registerErrors.password && (
+                      <div className="flex items-center gap-1 text-sm text-red-500">
+                        <AlertCircle className="h-4 w-4" />
+                        <span>{registerErrors.password}</span>
+                      </div>
+                    )}
+                    {!registerErrors.password && (
+                      <p className="text-xs text-muted-foreground">
+                        Минимум 8 символов, должна быть хотя бы одна буква и одна цифра
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="confirm-password">Подтвердите пароль</Label>
@@ -159,32 +282,39 @@ export const Login = () => {
                       id="confirm-password"
                       type="password"
                       value={registerData.confirmPassword}
-                      onChange={(e) =>
+                      onChange={(e) => {
                         setRegisterData({ ...registerData, confirmPassword: e.target.value })
-                      }
+                        if (touchedFields.confirmPassword) {
+                          validateField('confirmPassword', e.target.value)
+                        }
+                      }}
+                      onBlur={() => handleFieldBlur('confirmPassword')}
+                      className={registerErrors.confirmPassword ? 'border-red-500' : ''}
                       required
                     />
+                    {touchedFields.confirmPassword && registerErrors.confirmPassword && (
+                      <div className="flex items-center gap-1 text-sm text-red-500">
+                        <AlertCircle className="h-4 w-4" />
+                        <span>{registerErrors.confirmPassword}</span>
+                      </div>
+                    )}
                   </div>
-                  <Button type="submit" className="w-full">
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={
+                      Object.keys(registerErrors).length > 0 ||
+                      !registerData.username ||
+                      !registerData.email ||
+                      !registerData.password ||
+                      !registerData.confirmPassword
+                    }
+                  >
                     Зарегистрироваться
                   </Button>
                 </form>
               </TabsContent>
             </Tabs>
-            <div className="mt-4 pt-4 border-t">
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full"
-                onClick={handleInitTestData}
-              >
-                <Database className="h-4 w-4 mr-2" />
-                Создать тестовые данные
-              </Button>
-              <p className="text-xs text-muted-foreground mt-2 text-center">
-                Создаст тестовых пользователей и тикеты для демонстрации
-              </p>
-            </div>
           </CardContent>
         </Card>
       </div>

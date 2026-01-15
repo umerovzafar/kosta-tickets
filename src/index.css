@@ -53,8 +53,24 @@
   * {
     @apply border-border;
   }
+  html {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+  html::-webkit-scrollbar {
+    display: none;  /* Chrome, Safari and Opera */
+    width: 0;
+    height: 0;
+  }
   body {
     @apply bg-background text-foreground;
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+  body::-webkit-scrollbar {
+    display: none;  /* Chrome, Safari and Opera */
+    width: 0;
+    height: 0;
   }
 }
 
@@ -73,6 +89,16 @@
   }
   .scrollbar-hide::-webkit-scrollbar-thumb {
     display: none !important;
+  }
+  /* Скрытие скроллбара для всех элементов с overflow */
+  * {
+    scrollbar-width: none;  /* Firefox */
+    -ms-overflow-style: none;  /* IE and Edge */
+  }
+  *::-webkit-scrollbar {
+    display: none;  /* Chrome, Safari and Opera */
+    width: 0;
+    height: 0;
   }
 }
 

@@ -7,7 +7,6 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { Layout } from './components/Layout'
 import { Login } from './pages/Login'
 import { Home } from './pages/Home'
-import { CreateTicket } from './pages/CreateTicket'
 import { TicketDetail } from './pages/TicketDetail'
 import { AllTickets } from './pages/AllTickets'
 import { Admin } from './pages/Admin'
@@ -30,16 +29,6 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <Home />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/create-ticket"
-        element={
-          <ProtectedRoute>
-            <Layout>
-              <CreateTicket />
             </Layout>
           </ProtectedRoute>
         }
@@ -87,7 +76,7 @@ function AppRoutes() {
       <Route
         path="/inventory"
         element={
-          <ProtectedRoute requiredRole="admin">
+          <ProtectedRoute allowedRoles={['admin', 'it']}>
             <Layout>
               <Inventory />
             </Layout>

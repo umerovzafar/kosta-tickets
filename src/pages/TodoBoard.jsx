@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useTodos } from '../context/TodoContext'
+import { wsService } from '../services/websocket'
 import { Card, CardContent } from '../components/ui/card'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
@@ -36,7 +37,6 @@ import {
   Plus,
   Trash2,
   Search,
-  Bell,
   HelpCircle,
   User,
   MoreVertical,
@@ -48,7 +48,6 @@ import {
   UserPlus,
   Share2,
   Settings,
-  Sparkles,
   Volume2,
   Image as ImageIcon,
   CheckSquare,
@@ -68,6 +67,7 @@ import {
   CheckCircle,
   XCircle,
   Info,
+  ArrowLeft,
 } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { cn } from '../lib/utils'
@@ -95,7 +95,6 @@ export const TodoBoard = () => {
   const [toasts, setToasts] = useState([])
   const [newCardTitle, setNewCardTitle] = useState('')
   const [newColumnTitle, setNewColumnTitle] = useState('')
-  const [selectedBoard, setSelectedBoard] = useState('Проверка')
   const [editingColumnId, setEditingColumnId] = useState(null)
   const [editColumnTitle, setEditColumnTitle] = useState('')
   const [selectedTodo, setSelectedTodo] = useState(null)
@@ -156,27 +155,99 @@ export const TodoBoard = () => {
   const allUsers = getAllUsers()
 
   useEffect(() => {
-    // Загружаем колонки из localStorage
-    const savedColumns = localStorage.getItem('todoBoardColumns')
-    if (savedColumns) {
+    // Load columns from API first, then fallback to localStorage
+    const loadColumns = async () => {
       try {
-        const parsed = JSON.parse(savedColumns)
-        // Убеждаемся, что все колонки имеют поле color
-        const columnsWithColor = parsed.map((col) => ({
-          ...col,
+        console.log('📥 Loading columns from API...')
+        const apiColumns = await api.getTodoColumns()
+        if (apiColumns && apiColumns.length > 0) {
+          console.log(`✅ Loaded ${apiColumns.length} columns from API`)
+          const columnsWithColor = apiColumns.map((col) => ({
+            id: col.column_id,
+            title: col.title,
+            status: col.status,
+            color: col.color || 'primary',
+            backgroundImage: col.background_image || null,
+          }))
+          setColumns(columnsWithColor)
+          localStorage.setItem('todoBoardColumns', JSON.stringify(columnsWithColor))
+          return
+        }
+      } catch (error) {
+        console.error('❌ Failed to load columns from API:', error)
+      }
+      
+      // Fallback to localStorage
+      const savedColumns = localStorage.getItem('todoBoardColumns')
+      if (savedColumns) {
+        try {
+          const parsed = JSON.parse(savedColumns)
+          const columnsWithColor = parsed.map((col) => ({
+            ...col,
+            color: col.color || 'primary',
+            backgroundImage: col.backgroundImage || null,
+          }))
+          setColumns(columnsWithColor)
+          console.log('📥 Loaded columns from localStorage')
+        } catch (error) {
+          console.error('Ошибка загрузки колонок из localStorage:', error)
+        }
+      }
+    }
+
+    loadColumns()
+
+    // Subscribe to columns_updated WebSocket event
+    const unsubscribeColumnsUpdated = wsService.on('columns_updated', (data) => {
+      console.log('📋 WebSocket: columns_updated event received', data)
+      if (data.columns && Array.isArray(data.columns)) {
+        const columnsWithColor = data.columns.map((col) => ({
+          id: col.id || col.column_id,
+          title: col.title,
+          status: col.status,
           color: col.color || 'primary',
-          backgroundImage: col.backgroundImage || null,
+          backgroundImage: col.backgroundImage || col.background_image || null,
         }))
         setColumns(columnsWithColor)
-      } catch (error) {
-        console.error('Ошибка загрузки колонок из localStorage:', error)
+        localStorage.setItem('todoBoardColumns', JSON.stringify(columnsWithColor))
       }
+    })
+
+    return () => {
+      unsubscribeColumnsUpdated()
     }
   }, [])
 
   useEffect(() => {
-    // Сохраняем колонки в localStorage
+    // Skip saving on initial load
+    if (columns.length === 0) return
+    
+    // Save to localStorage immediately for fast access
     localStorage.setItem('todoBoardColumns', JSON.stringify(columns))
+    
+    // Save to API (backend will broadcast via WebSocket)
+    const saveColumnsToAPI = async () => {
+      try {
+        const columnsData = columns.map((col, index) => ({
+          column_id: col.id,
+          title: col.title,
+          status: col.status,
+          color: col.color || 'primary',
+          background_image: col.backgroundImage || null,
+          order_index: index.toString(),
+        }))
+        
+        await api.updateTodoColumns(columnsData)
+        console.log('✅ Columns saved to API')
+      } catch (error) {
+        console.error('❌ Failed to save columns to API:', error)
+      }
+    }
+    
+    // Debounce API save to avoid too many requests
+    const timeoutId = setTimeout(saveColumnsToAPI, 500)
+    
+    return () => clearTimeout(timeoutId)
   }, [columns])
 
   useEffect(() => {
@@ -243,6 +314,15 @@ export const TodoBoard = () => {
     }
   }, [todos, selectedTodo?.id])
 
+  // Calculate checklist progress
+  const getChecklistProgress = (todo) => {
+    if (!todo || !todo.todoLists || todo.todoLists.length === 0) {
+      return 0
+    }
+    const checkedCount = todo.todoLists.filter((item) => item.checked).length
+    return Math.round((checkedCount / todo.todoLists.length) * 100)
+  }
+
   const handleOpenEditDialog = (todo) => {
     setSelectedTodo(todo)
     setEditTitle(todo.title)
@@ -272,18 +352,23 @@ export const TodoBoard = () => {
     setNewChecklistItem('')
   }
 
-  const handleSaveTodo = () => {
+  const handleSaveTodo = async () => {
     if (!selectedTodo || !editTitle.trim()) {
       showToast('Ошибка', 'Введите название задачи', 'destructive')
       return
     }
 
-    updateTodo(selectedTodo.id, {
-      title: editTitle,
-      description: editDescription,
-      dueDate: editDueDate || null,
+    try {
+      await updateTodo(selectedTodo.id, {
+        title: editTitle,
+        description: editDescription,
+        dueDate: editDueDate || null,
       })
       showToast('Успешно', 'Задача обновлена', 'default')
+    } catch (error) {
+      console.error('Failed to update todo:', error)
+      showToast('Ошибка', 'Не удалось обновить задачу', 'destructive')
+    }
   }
 
   const handleAddTag = () => {
@@ -412,12 +497,17 @@ export const TodoBoard = () => {
     showToast('Успешно', 'Приоритет изменен', 'default')
   }
 
-  const handleDeleteChecklist = () => {
+  const handleDeleteChecklist = async () => {
     if (!selectedTodo) return
 
     if (confirm('Вы уверены, что хотите удалить весь чек-лист?')) {
-      updateTodo(selectedTodo.id, { todoLists: [] })
-      showToast('Успешно', 'Чек-лист удален', 'default')
+      try {
+        await updateTodo(selectedTodo.id, { todoLists: [] })
+        showToast('Успешно', 'Чек-лист удален', 'default')
+      } catch (error) {
+        console.error('Failed to delete checklist:', error)
+        showToast('Ошибка', 'Не удалось удалить чек-лист', 'destructive')
+      }
     }
   }
 
@@ -694,40 +784,63 @@ export const TodoBoard = () => {
     showToast('Успешно', 'Вложение удалено', 'default')
   }
 
-  const handleAddCommentSubmit = () => {
+  const handleAddCommentSubmit = async () => {
     if (!selectedTodo || !commentText.trim()) return
 
-    addComment(selectedTodo.id, commentText, user.id, user.username)
-    
-    // Добавляем уведомление о новом комментарии
-    sendNotificationWithSound(
-      'Новый комментарий',
-      `Добавлен комментарий к карточке "${selectedTodo.title}"`,
-      'info',
-      selectedTodo.id
-    )
-    
-    setCommentText('')
-    showToast('Успешно', 'Комментарий добавлен', 'default')
+    try {
+      await addComment(selectedTodo.id, commentText, user.id, user.username)
+      
+      // Добавляем уведомление о новом комментарии
+      sendNotificationWithSound(
+        'Новый комментарий',
+        `Добавлен комментарий к карточке "${selectedTodo.title}"`,
+        'info',
+        selectedTodo.id
+      )
+      
+      setCommentText('')
+      showToast('Успешно', 'Комментарий добавлен', 'default')
+    } catch (error) {
+      console.error('Failed to add comment:', error)
+      showToast('Ошибка', 'Не удалось добавить комментарий', 'destructive')
+    }
   }
 
-  const handleAddChecklistItem = () => {
+  const handleAddChecklistItem = async () => {
     if (!selectedTodo || !newChecklistItem.trim()) return
 
-    addTodoListItem(selectedTodo.id, newChecklistItem)
-    setNewChecklistItem('')
-    showToast('Успешно', 'Пункт добавлен', 'default')
+    try {
+      await addTodoListItem(selectedTodo.id, newChecklistItem)
+      setNewChecklistItem('')
+      showToast('Успешно', 'Пункт добавлен', 'default')
+    } catch (error) {
+      console.error('Failed to add checklist item:', error)
+      showToast('Ошибка', 'Не удалось добавить пункт', 'destructive')
+    }
   }
 
-  const handleToggleChecklistItem = (itemId, checked) => {
+  const handleToggleChecklistItem = async (itemId, checked) => {
     if (!selectedTodo) return
-    updateTodoListItem(selectedTodo.id, itemId, { checked })
+    
+    try {
+      await updateTodoListItem(selectedTodo.id, itemId, { checked })
+      // Progress will update automatically via WebSocket
+    } catch (error) {
+      console.error('Failed to toggle checklist item:', error)
+      showToast('Ошибка', 'Не удалось обновить пункт', 'destructive')
+    }
   }
 
-  const handleDeleteChecklistItem = (itemId) => {
+  const handleDeleteChecklistItem = async (itemId) => {
     if (!selectedTodo) return
-    deleteTodoListItem(selectedTodo.id, itemId)
-    showToast('Успешно', 'Пункт удален', 'default')
+    
+    try {
+      await deleteTodoListItem(selectedTodo.id, itemId)
+      showToast('Успешно', 'Пункт удален', 'default')
+    } catch (error) {
+      console.error('Failed to delete checklist item:', error)
+      showToast('Ошибка', 'Не удалось удалить пункт', 'destructive')
+    }
   }
 
   const showToast = (title, description, variant = 'default') => {
@@ -738,7 +851,7 @@ export const TodoBoard = () => {
     }, 3000)
   }
 
-  const handleCreateCard = (columnId) => {
+  const handleCreateCard = async (columnId) => {
     if (!newCardTitle.trim()) {
       showToast('Ошибка', 'Введите название карточки', 'destructive')
       return
@@ -747,34 +860,39 @@ export const TodoBoard = () => {
     const column = columns.find((col) => col.id === columnId)
     if (!column) return
 
-    const newTodo = addTodo({
-      title: newCardTitle,
-      description: '',
-      status: column.status,
-      priority: 'medium',
-      assignedTo: [],
-      tags: [],
-      comments: [],
-      todoLists: [],
-      attachments: [],
-      storyPoints: null,
+    try {
+      const newTodo = await addTodo({
+        title: newCardTitle,
+        description: '',
+        status: column.status,
+        priority: 'medium',
+        assignedTo: [],
+        tags: [],
+        comments: [],
+        todoLists: [],
+        attachments: [],
+        storyPoints: null,
       inFocus: false,
       read: true,
       project: null,
       dueDate: null,
     })
 
-    sendNotificationWithSound(
-      'Карточка создана',
-      `"${newCardTitle}" создана в колонке "${column.title}"`,
-      'success',
-      newTodo.id
-    )
+      sendNotificationWithSound(
+        'Карточка создана',
+        `"${newCardTitle}" создана в колонке "${column.title}"`,
+        'success',
+        newTodo.id
+      )
 
-    setNewCardTitle('')
-    setCreateCardDialogOpen(false)
-    setSelectedColumnId(null)
-    showToast('Успешно', 'Карточка создана', 'default')
+      setNewCardTitle('')
+      setCreateCardDialogOpen(false)
+      setSelectedColumnId(null)
+      showToast('Успешно', 'Карточка создана', 'default')
+    } catch (error) {
+      console.error('Failed to create todo:', error)
+      showToast('Ошибка', 'Не удалось создать карточку', 'destructive')
+    }
   }
 
   const handleCreateColumn = () => {
@@ -865,30 +983,35 @@ export const TodoBoard = () => {
     e.dataTransfer.dropEffect = 'move'
   }
 
-  const handleDrop = (e, column) => {
+  const handleDrop = async (e, column) => {
     e.preventDefault()
 
     if (draggedTodo && draggedTodo.status !== column.status) {
-      moveTodo(draggedTodo.id, column.status)
-      sendNotificationWithSound(
-        'Карточка перемещена',
-        `"${draggedTodo.title}" перемещена в "${column.title}"`,
-        'success',
-        draggedTodo.id
-      )
-      showToast('Успешно', 'Карточка перемещена', 'default')
+      try {
+        await moveTodo(draggedTodo.id, column.status)
+        sendNotificationWithSound(
+          'Карточка перемещена',
+          `"${draggedTodo.title}" перемещена в "${column.title}"`,
+          'success',
+          draggedTodo.id
+        )
+        showToast('Успешно', 'Карточка перемещена', 'default')
+      } catch (error) {
+        console.error('Failed to move todo:', error)
+        showToast('Ошибка', 'Не удалось переместить карточку', 'destructive')
+      }
     }
     setDraggedTodo(null)
   }
 
-  const filteredTodos = todos.filter((todo) => {
+  const filteredTodos = useMemo(() => todos.filter((todo) => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
     return (
       todo.title.toLowerCase().includes(query) ||
       todo.description?.toLowerCase().includes(query)
     )
-  })
+  }), [todos, searchQuery])
 
   const getUserInitials = (username) => {
     return username
@@ -932,7 +1055,6 @@ export const TodoBoard = () => {
     const exportData = {
       todos: todos,
       columns: columns,
-      selectedBoard: selectedBoard,
       theme: theme,
       notifications: notifications,
       exportDate: new Date().toISOString(),
@@ -1015,32 +1137,30 @@ export const TodoBoard = () => {
   }
 
   return (
-    <div className="h-full flex flex-col bg-background transition-colors duration-300">
+    <div className="h-screen flex flex-col bg-background transition-colors duration-300 overflow-hidden">
       {/* Top Navigation Bar - Transparent with Blur */}
       <div className={cn(
-        "fixed top-0 left-0 right-0 z-50 border-b px-4 py-3 flex items-center justify-between gap-4 flex-shrink-0 backdrop-blur-md transition-all duration-300",
+        "fixed top-0 left-0 right-0 z-50 border-b px-4 py-3 flex items-center justify-between gap-4 flex-shrink-0 backdrop-blur-xl transition-all duration-300 shadow-lg shadow-black/5",
         theme === 'dark' 
-          ? "bg-gray-900/80 border-gray-800/50 backdrop-blur-lg" 
-          : "bg-white/80 border-gray-200/50 backdrop-blur-lg"
+          ? "bg-gray-900/70 border-gray-800/30 backdrop-blur-xl" 
+          : "bg-white/70 border-gray-200/30 backdrop-blur-xl"
       )}>
-        <div className="flex items-center gap-4 flex-1">
-          {/* Board Selector */}
-          <Select value={selectedBoard} onValueChange={setSelectedBoard}>
-            <SelectTrigger className={cn(
-              "w-[140px] transition-colors",
-              theme === 'dark' 
-                ? "bg-gray-800/80 border-gray-700/50 text-white hover:bg-gray-800/90" 
-                : "bg-white/80 border-gray-300/50 text-gray-900 hover:bg-white/90"
-            )}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Проверка">Проверка</SelectItem>
-              <SelectItem value="Разработка">Разработка</SelectItem>
-              <SelectItem value="Дизайн">Дизайн</SelectItem>
-            </SelectContent>
-          </Select>
-                </div>
+        {/* Back Button */}
+        <div className="flex items-center gap-4 flex-shrink-0">
+          <Button
+            variant="ghost"
+            onClick={() => navigate('/')}
+            className={cn(
+              "transition-all",
+              theme === 'dark'
+                ? "text-white hover:bg-gray-800/50"
+                : "text-gray-700 hover:bg-gray-100/50"
+            )}
+          >
+            <ArrowLeft className="h-5 w-5 mr-2" />
+            Назад
+          </Button>
+        </div>
 
         {/* Search */}
         <div className="flex items-center gap-3 flex-1 justify-center">
@@ -1054,10 +1174,10 @@ export const TodoBoard = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className={cn(
-                "pl-9 pr-4 transition-colors",
+                "pl-9 pr-4 transition-all duration-300 backdrop-blur-md",
                 theme === 'dark'
-                  ? "bg-gray-800/80 border-gray-700/50 text-white placeholder:text-gray-400 hover:bg-gray-800/90"
-                  : "bg-white/80 border-gray-300/50 text-gray-900 placeholder:text-gray-500 hover:bg-white/90"
+                  ? "bg-gray-800/70 border-gray-700/40 text-white placeholder:text-gray-400 hover:bg-gray-800/80 focus:bg-gray-800/90 focus:border-primary/50 shadow-lg"
+                  : "bg-white/70 border-gray-300/40 text-gray-900 placeholder:text-gray-500 hover:bg-white/80 focus:bg-white/90 focus:border-primary/50 shadow-lg"
               )}
             />
           </div>
@@ -1065,38 +1185,15 @@ export const TodoBoard = () => {
 
         {/* Right Actions */}
         <div className="flex items-center gap-2 flex-shrink-0">
-          <Button className="bg-primary text-primary-foreground hover:bg-primary/90 transition-all">
-            <Sparkles className="h-4 w-4 mr-2" />
-            Создать
-          </Button>
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            onClick={() => setNotificationsPanelOpen(true)}
-            className={cn(
-              "relative transition-all",
-              theme === 'dark'
-                ? "text-white hover:bg-gray-800/50"
-                : "text-gray-700 hover:bg-gray-100/50"
-            )}
-            title="Уведомления"
-          >
-            <Bell className="h-5 w-5" />
-            {unreadNotificationsCount > 0 && (
-              <span className="absolute top-1 right-1 h-5 w-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
-              </span>
-            )}
-          </Button>
           <Button
             variant="ghost"
             size="icon"
             onClick={toggleTheme}
             className={cn(
-              "transition-all",
+              "transition-all duration-300 backdrop-blur-sm",
               theme === 'dark'
-                ? "text-white hover:bg-gray-800/50"
-                : "text-gray-700 hover:bg-gray-100/50"
+                ? "text-white hover:bg-gray-800/60 hover:scale-110"
+                : "text-gray-700 hover:bg-gray-100/60 hover:scale-110"
             )}
             title={theme === 'dark' ? 'Переключить на светлую тему' : 'Переключить на темную тему'}
           >
@@ -1140,12 +1237,12 @@ export const TodoBoard = () => {
 
       {/* Main Board Area */}
       <div className={cn(
-        "flex-1 overflow-x-auto overflow-y-hidden p-4 scrollbar-hide transition-colors duration-300",
+        "flex-1 overflow-x-auto overflow-y-hidden p-4 scrollbar-hide transition-all duration-500 min-h-0",
         theme === 'dark'
-          ? "bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900"
-          : "bg-gradient-to-br from-gray-50 to-gray-100"
+          ? "bg-gradient-to-br from-gray-900/95 via-gray-800/95 to-gray-900/95"
+          : "bg-gradient-to-br from-gray-50/95 via-blue-50/30 to-purple-50/30"
       )}>
-        <div className="flex gap-4 h-full">
+        <div className="flex gap-4 h-full min-h-0">
           {columns.map((column) => {
             const columnTodos = filteredTodos.filter((todo) => todo.status === column.status)
 
@@ -1153,10 +1250,10 @@ export const TodoBoard = () => {
               <div
                 key={column.id}
                 className={cn(
-                  "flex flex-col flex-shrink-0 w-80 rounded-lg shadow-sm relative overflow-hidden backdrop-blur-sm transition-colors duration-300",
+                  "flex flex-col flex-shrink-0 w-80 h-full max-h-full rounded-xl shadow-lg relative overflow-hidden backdrop-blur-md transition-all duration-300 hover:shadow-xl",
                   theme === 'dark' 
-                    ? "bg-gray-800/30 border border-gray-700/30" 
-                    : "bg-white/30 border border-gray-200/30"
+                    ? "bg-gray-800/40 border border-gray-700/40 backdrop-blur-md" 
+                    : "bg-white/60 border border-gray-200/50 backdrop-blur-md"
                 )}
                 style={{
                   backgroundColor: column.backgroundImage 
@@ -1172,14 +1269,15 @@ export const TodoBoard = () => {
               >
                 {column.backgroundImage && (
                   <div className={cn(
-                    "absolute inset-0 backdrop-blur-sm pointer-events-none transition-colors",
-                    theme === 'dark' ? "bg-black/20" : "bg-white/20"
+                    "absolute inset-0 backdrop-blur-md pointer-events-none transition-all duration-300",
+                    theme === 'dark' ? "bg-black/30" : "bg-white/40"
                   )}></div>
                 )}
                 {/* Column Header */}
                 <div className={cn(
-                  "p-3 border-b flex items-center justify-between rounded-t-lg relative z-10",
-                  colorPalette[column.color]?.header || colorPalette.primary.header
+                  "p-3 border-b flex items-center justify-between rounded-t-xl relative z-10 backdrop-blur-sm transition-all duration-300",
+                  colorPalette[column.color]?.header || colorPalette.primary.header,
+                  "shadow-md"
                 )}>
                   {editingColumnId === column.id ? (
                     <div className="flex items-center gap-2 flex-1">
@@ -1221,13 +1319,78 @@ export const TodoBoard = () => {
                     </div>
                   ) : (
                     <>
-                      <h3 className="font-semibold text-sm">{column.title}</h3>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
+                      <h3 className="font-semibold text-sm flex-1">{column.title}</h3>
+                      <div className="flex items-center gap-1">
+                        <Dialog
+                          open={createCardDialogOpen && selectedColumnId === column.id}
+                          onOpenChange={(open) => {
+                            setCreateCardDialogOpen(open)
+                            if (!open) setSelectedColumnId(null)
+                          }}
+                        >
+                          <DialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-white hover:bg-white/20"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setSelectedColumnId(column.id)
+                                setCreateCardDialogOpen(true)
+                              }}
+                            >
+                              <Plus className="h-4 w-4" />
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent>
+                            <DialogHeader>
+                              <DialogTitle>Создать карточку</DialogTitle>
+                              <DialogDescription>
+                                Добавьте новую задачу в колонку "{column.title}"
+                              </DialogDescription>
+                            </DialogHeader>
+                            <div className="space-y-4">
+                              <div className="space-y-2">
+                                <Label htmlFor="card-title">Название *</Label>
+                                <Input
+                                  id="card-title"
+                                  value={newCardTitle}
+                                  onChange={(e) => setNewCardTitle(e.target.value)}
+                                  placeholder="Введите название задачи"
+                                  onKeyPress={(e) => {
+                                    if (e.key === 'Enter' && newCardTitle.trim()) {
+                                      handleCreateCard(column.id)
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <div className="flex gap-2 justify-end">
+                                <Button
+                                  variant="outline"
+                                  onClick={() => {
+                                    setCreateCardDialogOpen(false)
+                                    setSelectedColumnId(null)
+                                    setNewCardTitle('')
+                                  }}
+                                >
+                                  Отмена
+                                </Button>
+                                <Button
+                                  onClick={() => handleCreateCard(column.id)}
+                                  disabled={!newCardTitle.trim()}
+                                >
+                                  Создать
+                                </Button>
+                              </div>
+                            </div>
+                          </DialogContent>
+                        </Dialog>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-6 w-6 text-white hover:bg-white/20">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-56">
                           <DropdownMenuItem onClick={() => handleRenameColumn(column.id)}>
                             <Edit2 className="h-4 w-4 mr-2" />
@@ -1291,13 +1454,14 @@ export const TodoBoard = () => {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
+                      </div>
                     </>
                   )}
                 </div>
 
                 {/* Cards */}
                 <div className={cn(
-                  "flex-1 overflow-y-auto p-3 space-y-2 min-h-[200px] scrollbar-hide relative z-10 transition-colors",
+                  "flex-1 overflow-y-auto p-3 space-y-2 min-h-0 scrollbar-hide relative z-10 transition-all duration-300",
                   theme === 'dark' ? "bg-transparent" : "bg-transparent"
                 )}>
                   {columnTodos.map((todo) => (
@@ -1308,10 +1472,10 @@ export const TodoBoard = () => {
                       onDragEnd={handleDragEnd}
                       onClick={() => handleOpenEditDialog(todo)}
                       className={cn(
-                        "group cursor-pointer transition-all duration-200 relative overflow-hidden",
+                        "group cursor-pointer transition-all duration-300 relative overflow-hidden backdrop-blur-sm",
                         theme === 'dark'
-                          ? "bg-gray-700/50 border-gray-600/50 hover:shadow-lg hover:border-primary/50 hover:bg-gray-700/70"
-                          : "bg-white border-gray-200 hover:shadow-md hover:border-primary/50"
+                          ? "bg-gray-700/60 border-gray-600/40 hover:shadow-xl hover:border-primary/60 hover:bg-gray-700/80 hover:scale-[1.02] hover:-translate-y-0.5"
+                          : "bg-white/80 border-gray-200/60 hover:shadow-xl hover:border-primary/60 hover:bg-white/95 hover:scale-[1.02] hover:-translate-y-0.5"
                       )}
                       style={{
                         backgroundImage: todo.backgroundImage ? `url(${todo.backgroundImage})` : undefined,
@@ -1321,7 +1485,7 @@ export const TodoBoard = () => {
                       }}
                     >
                       {todo.backgroundImage && (
-                        <div className="absolute inset-0 bg-black/20 group-hover:bg-black/30 transition-colors"></div>
+                        <div className="absolute inset-0 bg-black/30 group-hover:bg-black/40 backdrop-blur-[2px] transition-all duration-300"></div>
                       )}
                       <CardContent className="p-3 relative z-10">
                         <div className="space-y-2">
@@ -1368,8 +1532,9 @@ export const TodoBoard = () => {
                                   <span
                                     key={idx}
                                     className={cn(
-                                      'px-2 py-0.5 rounded text-xs font-medium',
-                                      tagColors[idx % tagColors.length]
+                                      'px-2 py-0.5 rounded-md text-xs font-medium backdrop-blur-sm transition-all duration-200 hover:scale-105',
+                                      tagColors[idx % tagColors.length],
+                                      theme === 'dark' ? 'opacity-90' : 'opacity-95'
                                     )}
                                   >
                                     {tag}
@@ -1402,76 +1567,6 @@ export const TodoBoard = () => {
                       </CardContent>
                     </Card>
                   ))}
-
-                  {/* Add Card Button */}
-                  <Dialog
-                    open={createCardDialogOpen && selectedColumnId === column.id}
-                    onOpenChange={(open) => {
-                      setCreateCardDialogOpen(open)
-                      if (!open) setSelectedColumnId(null)
-                    }}
-                  >
-              <DialogTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        className={cn(
-                          "w-full justify-start transition-colors",
-                          theme === 'dark'
-                            ? "text-gray-400 hover:text-gray-200 hover:bg-gray-700/50"
-                            : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-                        )}
-                        onClick={() => {
-                          setSelectedColumnId(column.id)
-                          setCreateCardDialogOpen(true)
-                        }}
-                      >
-                  <Plus className="h-4 w-4 mr-2" />
-                        Добавить карточку
-                </Button>
-              </DialogTrigger>
-                    <DialogContent>
-                <DialogHeader>
-                        <DialogTitle>Создать карточку</DialogTitle>
-                  <DialogDescription>
-                          Добавьте новую карточку в колонку "{column.title}"
-                  </DialogDescription>
-                </DialogHeader>
-                      <div className="space-y-4">
-                  <div className="space-y-2">
-                          <Label htmlFor="cardTitle">Название карточки</Label>
-                    <Input
-                            id="cardTitle"
-                            value={newCardTitle}
-                            onChange={(e) => setNewCardTitle(e.target.value)}
-                            placeholder="Введите название..."
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter' && newCardTitle.trim()) {
-                                handleCreateCard(column.id)
-                              }
-                            }}
-                    />
-                  </div>
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            variant="outline"
-                            onClick={() => {
-                              setCreateCardDialogOpen(false)
-                              setSelectedColumnId(null)
-                              setNewCardTitle('')
-                            }}
-                          >
-                            Отмена
-                          </Button>
-                          <Button
-                            onClick={() => handleCreateCard(column.id)}
-                            disabled={!newCardTitle.trim()}
-                          >
-                            Добавить
-                          </Button>
-                        </div>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
                 </div>
               </div>
             )
@@ -1483,10 +1578,10 @@ export const TodoBoard = () => {
               <Button
                 variant="ghost"
                 className={cn(
-                  "flex-shrink-0 w-80 h-fit backdrop-blur-sm border-2 border-dashed transition-all",
+                  "flex-shrink-0 w-80 h-fit backdrop-blur-md border-2 border-dashed transition-all duration-300 hover:scale-[1.02]",
                   theme === 'dark'
-                    ? "bg-gray-800/50 border-gray-600/50 hover:border-primary hover:bg-primary/10 text-gray-300 hover:text-primary"
-                    : "bg-white/90 border-gray-300 hover:border-primary hover:bg-primary/5 text-gray-600 hover:text-primary"
+                    ? "bg-gray-800/40 border-gray-600/40 hover:border-primary/60 hover:bg-primary/20 text-gray-300 hover:text-primary shadow-lg hover:shadow-xl"
+                    : "bg-white/60 border-gray-300/50 hover:border-primary/60 hover:bg-primary/10 text-gray-600 hover:text-primary shadow-lg hover:shadow-xl"
                 )}
               >
                 <Plus className="h-4 w-4 mr-2" />
@@ -1541,6 +1636,12 @@ export const TodoBoard = () => {
       {/* Edit Todo Dialog - Full Screen Modal */}
       <Dialog open={editDialogOpen} onOpenChange={handleCloseEditDialog}>
         <DialogContent className="max-w-[95vw] max-h-[95vh] w-[95vw] h-[95vh] p-0 flex flex-col [&>button]:hidden !translate-x-[-50%] !translate-y-[-50%] !left-1/2 !top-1/2 !mx-0">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Редактирование карточки</DialogTitle>
+            <DialogDescription>
+              Редактирование карточки {selectedTodo?.title || ''}
+            </DialogDescription>
+          </DialogHeader>
           {selectedTodo && (
             <>
               {/* Top Header Bar */}
@@ -1550,17 +1651,22 @@ export const TodoBoard = () => {
               )}>
                     <Select
                   value={selectedTodo.status}
-                  onValueChange={(newStatus) => {
-                    updateTodo(selectedTodo.id, { status: newStatus })
-                    const column = columns.find((col) => col.status === newStatus)
-                    if (column) {
-                      sendNotificationWithSound(
-                        'Карточка перемещена',
-                        `"${selectedTodo.title}" перемещена в "${column.title}"`,
-                        'success',
-                        selectedTodo.id
-                      )
-                      showToast('Успешно', `Карточка перемещена в "${column.title}"`, 'default')
+                  onValueChange={async (newStatus) => {
+                    try {
+                      await updateTodo(selectedTodo.id, { status: newStatus })
+                      const column = columns.find((col) => col.status === newStatus)
+                      if (column) {
+                        sendNotificationWithSound(
+                          'Карточка перемещена',
+                          `"${selectedTodo.title}" перемещена в "${column.title}"`,
+                          'success',
+                          selectedTodo.id
+                        )
+                        showToast('Успешно', `Карточка перемещена в "${column.title}"`, 'default')
+                      }
+                    } catch (error) {
+                      console.error('Failed to update todo status:', error)
+                      showToast('Ошибка', 'Не удалось переместить карточку', 'destructive')
                     }
                   }}
                 >
@@ -1900,27 +2006,18 @@ export const TodoBoard = () => {
                     {/* Progress Bar */}
                     {selectedTodo.todoLists && selectedTodo.todoLists.length > 0 && (
                       <div className="space-y-2">
-                        <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
                           <div
-                            className="bg-primary h-2 rounded-full transition-all"
+                            className="bg-primary h-2 rounded-full transition-all duration-300"
                             style={{
-                              width: `${
-                                (selectedTodo.todoLists.filter((item) => item.checked).length /
-                                  selectedTodo.todoLists.length) *
-                                100
-                              }%`,
+                              width: `${getChecklistProgress(selectedTodo)}%`,
                             }}
                           />
-                </div>
-                        <p className="text-sm text-gray-600">
-                          {Math.round(
-                            (selectedTodo.todoLists.filter((item) => item.checked).length /
-                              selectedTodo.todoLists.length) *
-                              100
-                          )}
-                          %
-                  </p>
-                </div>
+                        </div>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {getChecklistProgress(selectedTodo)}%
+                        </p>
+                      </div>
                     )}
 
                     {/* Checklist Items */}
@@ -2605,7 +2702,6 @@ export const TodoBoard = () => {
                 <div className="space-y-2 text-sm text-gray-600 dark:text-gray-400">
                   <p>Всего задач: <span className="font-medium">{todos.length}</span></p>
                   <p>Колонок: <span className="font-medium">{columns.length}</span></p>
-                  <p>Текущая доска: <span className="font-medium">{selectedBoard}</span></p>
                   <p>Тема: <span className="font-medium">{theme === 'dark' ? 'Темная' : 'Светлая'}</span></p>
                 </div>
               </div>
@@ -2669,7 +2765,7 @@ export const TodoBoard = () => {
                 "text-center py-12 transition-colors",
                 theme === 'dark' ? "text-gray-500" : "text-gray-400"
               )}>
-                <Bell className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                <Info className="h-12 w-12 mx-auto mb-4 opacity-50" />
                 <p className="text-sm">Нет уведомлений</p>
               </div>
             ) : (

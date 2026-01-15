@@ -23,6 +23,25 @@ dist-ssr
 *.sln
 *.sw?
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.db
+*.sqlite
+*.sqlite3
+tickets.db
+
+# Environment variables
+.env
+backend/.env
+
 
 
 

@@ -30,9 +30,21 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { cn } from '../lib/utils'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
+
+const formatDate = (dateString) => {
+  if (!dateString) return 'Не указано'
+  try {
+    const date = new Date(dateString)
+    if (isNaN(date.getTime())) return 'Не указано'
+    return format(date, 'dd.MM.yyyy')
+  } catch {
+    return 'Не указано'
+  }
+}
 
 export const Admin = () => {
-  const { user, toggleUserBlock, deleteUser, getAllUsers } = useAuth()
+  const { user, toggleUserBlock, deleteUser, loadUsers, updateUserRole } = useAuth()
   const { tickets } = useTickets()
   const navigate = useNavigate()
   const [users, setUsers] = useState([])
@@ -44,11 +56,11 @@ export const Admin = () => {
   const ticketsPerPage = 10
 
   useEffect(() => {
-    loadUsers()
+    loadUsersList()
   }, [])
 
-  const loadUsers = () => {
-    const allUsers = getAllUsers()
+  const loadUsersList = async () => {
+    const allUsers = await loadUsers()
     setUsers(allUsers)
   }
 
@@ -60,15 +72,18 @@ export const Admin = () => {
     }, 3000)
   }
 
-  const handleBlockToggle = (userId) => {
-    const updatedUsers = toggleUserBlock(userId)
-    setUsers(updatedUsers)
-    const blockedUser = updatedUsers.find((u) => u.id === userId)
-    showToast(
-      'Успешно',
-      `Пользователь ${blockedUser.blocked ? 'заблокирован' : 'разблокирован'}`,
-      'default'
-    )
+  const handleBlockToggle = async (userId) => {
+    try {
+      const updatedUser = await toggleUserBlock(userId)
+      await loadUsersList() // Reload users list
+      showToast(
+        'Успешно',
+        `Пользователь ${updatedUser.blocked ? 'заблокирован' : 'разблокирован'}`,
+        'default'
+      )
+    } catch (error) {
+      showToast('Ошибка', error.message || 'Не удалось изменить статус пользователя', 'destructive')
+    }
   }
 
   const handleDeleteClick = (userToDelete) => {
@@ -80,13 +95,38 @@ export const Admin = () => {
     setDeleteDialogOpen(true)
   }
 
-  const handleDeleteConfirm = () => {
-    if (userToDelete) {
-      deleteUser(userToDelete.id)
-      loadUsers()
+  const handleDeleteConfirm = async () => {
+    if (!userToDelete) return
+    
+    // Double check - prevent self-deletion
+    if (userToDelete.id === user.id) {
+      showToast('Ошибка', 'Вы не можете удалить свой собственный аккаунт', 'destructive')
+      setDeleteDialogOpen(false)
+      setUserToDelete(null)
+      return
+    }
+    
+    try {
+      await deleteUser(userToDelete.id)
+      await loadUsersList() // Reload users list
       showToast('Успешно', `Пользователь ${userToDelete.username} удален`, 'default')
       setDeleteDialogOpen(false)
       setUserToDelete(null)
+    } catch (error) {
+      console.error('Failed to delete user:', error)
+      const errorMessage = error.message || error.detail || 'Не удалось удалить пользователя'
+      showToast('Ошибка', errorMessage, 'destructive')
+      // Don't close dialog on error so user can try again
+    }
+  }
+
+  const handleRoleChange = async (userId, newRole) => {
+    try {
+      await updateUserRole(userId, newRole)
+      await loadUsersList()
+      showToast('Успешно', 'Роль пользователя обновлена', 'default')
+    } catch (error) {
+      showToast('Ошибка', error.message || 'Не удалось изменить роль пользователя', 'destructive')
     }
   }
 
@@ -102,6 +142,12 @@ export const Admin = () => {
     u.username.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
+  const paginatedTickets = useMemo(() => {
+    const startIndex = (ticketsPage - 1) * ticketsPerPage
+    const endIndex = startIndex + ticketsPerPage
+    return tickets.slice(startIndex, endIndex)
+  }, [tickets, ticketsPage, ticketsPerPage])
+
   const stats = {
     totalUsers: users.length,
     totalTickets: tickets.length,
@@ -113,9 +159,9 @@ export const Admin = () => {
   }
 
   return (
-    <div className="space-y-6 md:space-y-8">
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold">Админ-панель</h1>
+    <div className="space-y-6 md:space-y-8 px-4 md:px-6 lg:px-8 max-w-7xl mx-auto pt-16 lg:pt-4 sm:pt-6">
+      <div className="pl-12 lg:pl-0">
+        <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold">Админ-панель</h1>
         <p className="text-muted-foreground mt-2 text-sm sm:text-base">
           Управление системой, пользователями и тикетами
         </p>
@@ -231,15 +277,34 @@ export const Admin = () => {
                             )}
                           </div>
                           <div className="flex flex-wrap items-center gap-2 sm:gap-4 mt-1 text-xs sm:text-sm text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <span className="text-muted-foreground">Роль:</span>
+                              {u.id === user.id ? (
+                                <span className="font-medium">
+                                  {u.role === 'admin'
+                                    ? 'Администратор'
+                                    : u.role === 'it'
+                                    ? 'IT Отдел'
+                                    : 'Пользователь'}
+                                </span>
+                              ) : (
+                                <Select
+                                  value={u.role}
+                                  onValueChange={(newRole) => handleRoleChange(u.id, newRole)}
+                                >
+                                  <SelectTrigger className="h-7 w-[140px] text-xs">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="user">Пользователь</SelectItem>
+                                    <SelectItem value="it">IT Отдел</SelectItem>
+                                    <SelectItem value="admin">Администратор</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              )}
+                            </div>
                             <span>
-                              {u.role === 'admin'
-                                ? 'Администратор'
-                                : u.role === 'it'
-                                ? 'IT Отдел'
-                                : 'Пользователь'}
-                            </span>
-                            <span>
-                              Создан: {format(new Date(u.createdAt), 'dd.MM.yyyy')}
+                              Создан: {formatDate(u.createdAt)}
                             </span>
                             <span>Тикетов: {getUserTicketsCount(u.id)}</span>
                             {u.role === 'it' && (
@@ -311,11 +376,7 @@ export const Admin = () => {
               ) : (
                 <>
                   <div className="space-y-2">
-                    {useMemo(() => {
-                      const startIndex = (ticketsPage - 1) * ticketsPerPage
-                      const endIndex = startIndex + ticketsPerPage
-                      return tickets.slice(startIndex, endIndex)
-                    }, [tickets, ticketsPage, ticketsPerPage]).map((ticket) => (
+                    {paginatedTickets.map((ticket) => (
                       <Link
                         key={ticket.id}
                         to={`/ticket/${ticket.id}`}
@@ -331,7 +392,7 @@ export const Admin = () => {
                               <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
                                 <span>Автор: {ticket.createdByName}</span>
                                 <span>
-                                  Создан: {format(new Date(ticket.createdAt), 'dd.MM.yyyy')}
+                                  Создан: {formatDate(ticket.createdAt)}
                                 </span>
                                 <span>Статус: {ticket.status}</span>
                                 {ticket.assignedToName && (
@@ -373,7 +434,10 @@ export const Admin = () => {
             <DialogDescription>
               Вы уверены, что хотите удалить пользователя{' '}
               <strong>{userToDelete?.username}</strong>? Это действие нельзя отменить.
-              Все тикеты пользователя останутся в системе.
+              <br />
+              <span className="text-destructive font-medium mt-2 block">
+                Внимание: Будут удалены все тикеты, созданные этим пользователем, и все связанные данные.
+              </span>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

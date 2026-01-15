@@ -4,15 +4,17 @@ import { useAuth } from '../context/AuthContext'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { PaginationControls } from '../components/PaginationControls'
+import { ToastContainer } from '../components/ui/toast'
 import { useState, useMemo, useEffect } from 'react'
 import { Clock, CheckCircle, XCircle, Ticket } from 'lucide-react'
 import { format } from 'date-fns'
 
 export const AllTickets = () => {
-  const { getTicketsForUser } = useTickets()
+  const { getTicketsForUser, setNotificationHandler } = useTickets()
   const { isAdmin, isIT } = useAuth()
   const [statusFilter, setStatusFilter] = useState('all')
   const [currentPage, setCurrentPage] = useState(1)
+  const [toasts, setToasts] = useState([])
   const itemsPerPage = 10
 
   // Получаем тикеты с учетом роли пользователя
@@ -36,6 +38,21 @@ export const AllTickets = () => {
   useEffect(() => {
     setCurrentPage(1)
   }, [statusFilter])
+
+  const showToast = (title, description, variant = 'default') => {
+    const id = Date.now().toString()
+    setToasts([...toasts, { id, title, description, variant }])
+    setTimeout(() => {
+      setToasts(toasts.filter((t) => t.id !== id))
+    }, 5000)
+  }
+
+  useEffect(() => {
+    if ((isIT || isAdmin) && setNotificationHandler) {
+      setNotificationHandler(showToast)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isIT, isAdmin]) // setNotificationHandler is stable, no need to include it
 
   const getStatusIcon = (status) => {
     switch (status) {
@@ -90,9 +107,9 @@ export const AllTickets = () => {
   }
 
   return (
-    <div className="space-y-4 md:space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <h1 className="text-2xl sm:text-3xl font-bold">
+    <div className="space-y-4 md:space-y-6 px-4 md:px-6 lg:px-8 max-w-7xl mx-auto pt-16 lg:pt-4 sm:pt-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pl-0 lg:pl-0">
+        <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold pl-12 lg:pl-0">
           {isAdmin || isIT ? 'Все тикеты' : 'Мои тикеты'}
         </h1>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -117,22 +134,22 @@ export const AllTickets = () => {
         </Card>
       ) : (
         <>
-          <div className="space-y-4">
+          <div className="space-y-3 sm:space-y-4">
             {paginatedTickets.map((ticket) => (
             <Link
               key={ticket.id}
               to={`/ticket/${ticket.id}`}
               className="block"
             >
-              <Card className="hover:bg-accent transition-colors">
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
+              <Card className="hover:bg-accent/50 hover:shadow-md transition-all border-2">
+                <CardContent className="p-4 sm:p-6">
+                  <div className="flex flex-col sm:flex-row items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0 w-full">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
                         {getStatusIcon(ticket.status)}
-                        <h3 className="font-semibold text-lg">{ticket.title}</h3>
+                        <h3 className="font-semibold text-base sm:text-lg break-words flex-1 min-w-0">{ticket.title}</h3>
                         <span
-                          className={`px-2 py-1 text-xs rounded-full ${getPriorityColor(
+                          className={`px-2.5 py-1 text-xs font-medium rounded-full whitespace-nowrap ${getPriorityColor(
                             ticket.priority
                           )}`}
                         >
@@ -142,17 +159,33 @@ export const AllTickets = () => {
                       <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
                         {ticket.description}
                       </p>
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-xs text-muted-foreground">
-                        <span>Статус: {getStatusText(ticket.status)}</span>
-                        <span>
-                          Создан:{' '}
-                          {format(new Date(ticket.createdAt), 'dd MMM yyyy')}
-                        </span>
-                        <span>Автор: {ticket.createdByName}</span>
-                        {ticket.assignedToName && (
-                          <span>Назначен: {ticket.assignedToName}</span>
-                        )}
-                        <span>Комментариев: {ticket.comments.length}</span>
+                      <div className="flex flex-col gap-2 text-xs sm:text-sm text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-2 sm:gap-4">
+                          <span className="flex items-center gap-1">
+                            <span className="font-medium">Статус:</span>
+                            {getStatusText(ticket.status)}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <span className="font-medium">Создан:</span>
+                            {format(new Date(ticket.createdAt), 'dd MMM yyyy')}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 sm:gap-4">
+                          <span className="flex items-center gap-1">
+                            <span className="font-medium">Автор:</span>
+                            {ticket.createdByName}
+                          </span>
+                          {ticket.assignedToName && (
+                            <span className="flex items-center gap-1">
+                              <span className="font-medium">Назначен:</span>
+                              {ticket.assignedToName}
+                            </span>
+                          )}
+                          <span className="flex items-center gap-1">
+                            <span className="font-medium">Комментариев:</span>
+                            {ticket.comments.length}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -177,6 +210,7 @@ export const AllTickets = () => {
           )}
         </>
       )}
+      <ToastContainer toasts={toasts} setToasts={setToasts} />
     </div>
   )
 }

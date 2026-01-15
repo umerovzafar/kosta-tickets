@@ -1,19 +1,66 @@
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useTickets } from '../context/TicketsContext'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { ArrowLeft, User, Calendar, Ticket, Shield, Ban, UserCheck } from 'lucide-react'
 import { format } from 'date-fns'
 
 export const UserDetail = () => {
   const { userId } = useParams()
   const navigate = useNavigate()
-  const { getAllUsers } = useAuth()
+  const { getAllUsers, updateUserRole, user: currentUser, loadUsers } = useAuth()
   const { tickets } = useTickets()
+  const [userDetail, setUserDetail] = useState(null)
+  const [loading, setLoading] = useState(true)
 
-  const users = getAllUsers()
-  const userDetail = users.find((u) => u.id === userId)
+  const showToast = (title, description, variant = 'default') => {
+    // Simple toast notification
+    console.log(`${title}: ${description}`)
+    // You can replace this with a proper toast implementation if needed
+  }
+
+  useEffect(() => {
+    const loadUser = async () => {
+      try {
+        const users = getAllUsers()
+        const foundUser = users.find((u) => u.id === userId)
+        if (foundUser) {
+          setUserDetail(foundUser)
+        }
+      } catch (error) {
+        console.error('Failed to load user:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadUser()
+  }, [userId, getAllUsers])
+
+  const handleRoleChange = async (newRole) => {
+    try {
+      await updateUserRole(userId, newRole)
+      await loadUsers()
+      const users = getAllUsers()
+      const updatedUser = users.find((u) => u.id === userId)
+      if (updatedUser) {
+        setUserDetail(updatedUser)
+      }
+      showToast('Успешно', 'Роль пользователя обновлена', 'default')
+    } catch (error) {
+      showToast('Ошибка', error.message || 'Не удалось изменить роль пользователя', 'destructive')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-lg text-muted-foreground">Загрузка...</p>
+      </div>
+    )
+  }
 
   if (!userDetail) {
     return (
@@ -62,15 +109,15 @@ export const UserDetail = () => {
   }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-4 md:space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+    <div className="max-w-6xl mx-auto space-y-4 md:space-y-6 px-4 md:px-6 lg:px-8 pt-16 lg:pt-4 sm:pt-6">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 pl-12 lg:pl-0">
         <Button variant="ghost" asChild className="w-fit">
           <Link to="/admin">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Назад
           </Link>
         </Button>
-        <h1 className="text-2xl sm:text-3xl font-bold">Информация о пользователе</h1>
+        <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold">Информация о пользователе</h1>
       </div>
 
       <div className="grid gap-4 md:gap-6 md:grid-cols-3">
@@ -97,7 +144,9 @@ export const UserDetail = () => {
                   Дата регистрации
                 </div>
                 <p className="font-medium">
-                  {format(new Date(userDetail.createdAt), 'dd MMMM yyyy, HH:mm')}
+                  {userDetail.createdAt && !isNaN(new Date(userDetail.createdAt).getTime())
+                    ? format(new Date(userDetail.createdAt), 'dd MMMM yyyy, HH:mm')
+                    : 'Не указано'}
                 </p>
               </div>
 
@@ -106,7 +155,23 @@ export const UserDetail = () => {
                   <Shield className="h-4 w-4" />
                   Роль
                 </div>
-                <p className="font-medium">{getRoleText(userDetail.role)}</p>
+                {currentUser?.role === 'admin' && currentUser?.id !== userDetail.id ? (
+                  <Select
+                    value={userDetail.role}
+                    onValueChange={handleRoleChange}
+                  >
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="user">Пользователь</SelectItem>
+                      <SelectItem value="it">IT Отдел</SelectItem>
+                      <SelectItem value="admin">Администратор</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="font-medium">{getRoleText(userDetail.role)}</p>
+                )}
               </div>
 
               {userDetail.blocked && (
@@ -149,7 +214,9 @@ export const UserDetail = () => {
                             <span>Статус: {ticket.status}</span>
                             <span>
                               Создан:{' '}
-                              {format(new Date(ticket.createdAt), 'dd.MM.yyyy HH:mm')}
+                              {ticket.createdAt && !isNaN(new Date(ticket.createdAt).getTime())
+                                ? format(new Date(ticket.createdAt), 'dd.MM.yyyy HH:mm')
+                                : 'Не указано'}
                             </span>
                             <span>Комментариев: {ticket.comments.length}</span>
                           </div>
